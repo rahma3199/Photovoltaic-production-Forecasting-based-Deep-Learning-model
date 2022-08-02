@@ -1,0 +1,314 @@
+
+#Data :
+
+import time
+import h5py
+import random
+import numpy as np
+import pandas as pd
+from math import sqrt
+import seaborn as sns
+from matplotlib import style
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from pandas import DataFrame ,concat,read_csv , read_excel
+from sklearn.preprocessing import MinMaxScaler ,StandardScaler
+from sklearn.metrics import mean_squared_error ,mean_absolute_error,r2_score
+
+import tensorflow
+from tensorflow.keras.models import Sequential
+from tensorflow.keras import optimizers ,callbacks
+from tensorflow.keras.layers import Dense , Activation ,LSTM , Dropout , Flatten
+from tensorflow.keras.callbacks import EarlyStopping ,ReduceLROnPlateau,ModelCheckpoint,TensorBoard
+
+#read data (production) and the first 5 rows
+df = pd.read_csv('/content/Predis_Energy1.csv')
+df.head()
+
+
+
+
+print("="*50)
+print("First Five Rows ","\n")
+print(df.head(2),"\n")
+
+print("="*50)
+print("Information About Dataset","\n")
+print(df.info(),"\n")
+
+print("="*50)
+print("Describe the Dataset ","\n")
+print(df.describe(),"\n")
+
+print("="*50)
+print("Null Values t ","\n")
+print(df.isnull().sum(),"\n")
+
+
+
+
+dataset = df
+dataset["Date"] = pd.to_datetime(dataset["date_time"]).dt.date
+dataset["Year"] = pd.to_datetime(dataset["date_time"]).dt.year
+dataset["Month"] = pd.to_datetime(dataset["date_time"]).dt.month
+dataset["hour"] = pd.to_datetime(dataset["date_time"]).dt.hour
+dataset["Day"] = pd.to_datetime(dataset["date_time"]).dt.day_name()
+dataset["dayofweek"] = pd.to_datetime(dataset["date_time"]).dt.dayofweek
+dataset["dayofyear"] = pd.to_datetime(dataset["date_time"]).dt.dayofyear
+dataset["Week"] = pd.to_datetime(dataset["date_time"]).dt.week
+dataset = dataset.set_index("date_time")
+dataset.index = pd.to_datetime(dataset.index)
+dataset.head()
+
+
+#generate season column
+def season(dateofyear):
+    if ((dateofyear > 60) and (dateofyear < 152)):
+        s=1
+    elif ((dateofyear > 152) and (dateofyear < 244)):
+        s=2
+    elif ((dateofyear > 244) and (dateofyear < 355)):
+        s=3
+    else:
+        s=4
+    return s
+
+list_of_seasons=[]
+dayofyear=np.array(dataset['dayofyear'].iloc[:])
+
+for i in dayofyear:
+  list_of_seasons.append(season(i))
+dataset['season']= list_of_seasons
+
+#generate weekend days column
+def weekend(dateofweek):
+    if ((dateofweek == 6) or (dateofweek ==5)):
+        s=1 #weekend
+   
+    else:
+        s=0 #not_weekend
+    return s
+  
+list_of_weekend=[]
+dayofweek=np.array(dataset['dayofweek'].iloc[:])
+
+for i in dayofweek:
+  list_of_weekend.append(weekend(i))
+dataset['weekend']= list_of_weekend
+
+dataset.head()
+
+#Exploration
+
+
+dataset['conso_global'].plot()
+
+
+#Lets us see the PV production Each Year
+fig = plt.figure()
+ax1 = plt.subplot2grid((1,1), (0,0))
+style.use('ggplot')
+sns.lineplot(x=dataset["Year"], y=dataset['conso_global'], data=df)
+sns.set(rc={'figure.figsize':(15,6)})
+plt.xlabel("year")
+plt.ylabel("conso_global")
+plt.grid(True)
+plt.legend()
+
+plt.title("Energy production According to Year")
+
+
+
+
+fig = plt.figure()
+ax1= fig.add_subplot(311)
+ax2= fig.add_subplot(312)
+ax3= fig.add_subplot(313)
+style.use('ggplot')
+y_2016 = dataset["2016"]["conso_global"].to_list()
+x_2016 = dataset["2016"]["Date"].index
+ax1.plot(x_2016, y_2016, color="green", linewidth=1)
+
+y_2017 = dataset["2017"]['conso_global'].to_list()
+x_2017 = dataset["2017"]["Date"].to_list()
+ax2.plot(x_2017,y_2017, color="red", linewidth=1)
+
+y_2020 = dataset["2020"]["conso_global"].to_list()
+x_2020 = dataset["2020"]["Date"].to_list()
+ax3.plot(x_2020, y_2020, color="blue", linewidth=1)
+
+plt.rcParams["figure.figsize"] = (18,8)
+plt.xlabel("Date")
+plt.ylabel("conso_global")
+plt.grid(True, alpha=1)
+plt.legend()
+
+#production Distribution
+
+
+sns.distplot(dataset['conso_global'])
+plt.title("Energy Distribution")
+
+
+#production with Respect to hours
+
+
+sns.lineplot(x=dataset["hour"],y=dataset['conso_global'], data=df)
+plt.title("Energy Consumption vs Time ")
+plt.xlabel("hour")
+plt.grid(True, alpha=1)
+plt.legend()
+
+#Lets us see the PV production Each day
+
+
+sns.set_theme(style="darkgrid")
+sns.barplot(x='Day',y='conso_global', data=dataset)
+
+#Lets us see the PV production Each day with respect to weekend days
+
+
+sns.set_theme(style="darkgrid")
+sns.pointplot(x='dayofweek',y='conso_global',hue='weekend', data=dataset)
+
+#Lets us see the PV production Each month
+
+
+sns.lineplot(x=dataset['Month'],y=dataset['conso_global'],data=df)
+
+
+
+
+#Lets us see the PV production Each hour with respect to season
+
+
+fig,ax1= plt.subplots(nrows=1)
+fig.set_size_inches(20,9)
+sns.pointplot(data=dataset, x='hour', y='conso_global', hue='season', ax=ax1)
+
+
+#Preprocessing
+
+#features for forcasting
+cols=[ 'CTA','Eclairage','PC','conso_global','Year','Month','hour','dayofweek','dayofyear','Week','season','weekend']
+
+
+# normalize the dataset
+scaler = MinMaxScaler()
+df_for_training = dataset[cols].astype(float)
+df_for_training_scaled = scaler.fit_transform(df_for_training)
+#Variables of timing for training
+train_dates = pd.to_datetime(dataset.index)
+
+#As required for LSTM networks, we require to reshape an input data into (n_samples x n_input x n_features) 
+X = []
+Y = []
+train=0.8
+n_train=int(len(dataset)*train)
+n_output =24  # Number of days we want to predict into the future
+n_input = 96     # Number of past days we want to use to predict the future
+
+
+for i in range(n_input, len(df_for_training_scaled) - n_output +1):
+    X.append(df_for_training_scaled[i - n_input:i, 0:df_for_training.shape[1]])
+    Y.append(df_for_training_scaled[i + n_output - 1:i + n_output, 0])
+
+
+trainX , testX= X[:n_train],X[n_train:]
+trainY , testY = Y[:n_train],Y[n_train:]
+
+trainX, trainY = np.array(trainX), np.array(trainY)
+testX, testY = np.array(testX), np.array(testY)
+
+print('trainX shape == {}.'.format(trainX.shape))
+print('trainY shape == {}.'.format(trainY.shape))
+print('testX shape  == {}.'.format(testX.shape))
+print('testY shape  == {}.'.format(testY.shape))
+Execution output from Aug 3, 2021 8:24 PM
+0KB
+	Stream
+		trainX shape == (31294, 96, 12).
+		trainY shape == (31294, 1).
+		testX shape  == (7705, 96, 12).
+		testY shape  == (7705, 1).
+
+
+#Model 
+
+#Model parameters
+epochs=200
+batch_size=512
+lstm_activation='relu'
+layers_1=64
+layers_2=32
+model_conception='\n 2 hidden layers: \n    lstm with {}units \n    lstm with {}units \n dropout =0.2 \n dense with 1 unit'.format(layers_1,layers_2)
+learning_rate=0.0001
+
+
+#create the LSTM MOdel
+model = Sequential()
+# Adding the first LSTM layer
+model.add(LSTM(layers_1, activation='relu', input_shape=(trainX.shape[1], trainX.shape[2]), return_sequences=True))
+
+# Adding the second LSTM Layer
+model.add(LSTM(layers_2, activation='relu', return_sequences=False))
+# Adding the drop-out layer to avoid over-fitting
+model.add(Dropout(0.2))
+# Adding the dense layer
+model.add(Dense(trainY.shape[1]))
+# build the optimizer
+optimizer = optimizers.Adam(learning_rate=learning_rate)
+# compile model
+model.compile(optimizer=optimizer, loss='mse',metrics='accuracy')
+model.summary()
+
+
+# build callbacks
+es = EarlyStopping(monitor='val_loss', min_delta=1e-10, patience=10, verbose=1)
+rlr =ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=10, verbose=1)
+mcp = ModelCheckpoint(filepath='weights.h5',monitor='val_loss',verbose=1, save_best_only=True, save_weights_only=True)
+tb = TensorBoard('logs')
+# fit model
+history = model.fit(trainX,trainY, epochs=epochs,callbacks=[es, rlr, mcp, tb], batch_size=batch_size, validation_split=0.1, verbose=1)
+
+#forecast
+forecast = model.predict(testX[:])  
+
+#Perform inverse transformation to rescale back to original range
+#forecast_copies = np.repeat(forecast, df_for_training.shape[1], axis=-1)
+#y_pred_future = scaler.inverse_transform(forecast_copies)[:,0]
+y_pred_future = scaler.inverse_transform(forecast)[:,0]
+
+    
+df_forecast = pd.DataFrame({'date_time':dataset.index[-len(testX):], 'Production_PV':y_pred_future})
+df_actual = pd.DataFrame({'date_time':dataset.index[-len(testX):],'Production_PV':np.array(dataset['Production_PV'].iloc[-len(testX)-96:-96])})
+df_forecast['date_time']=pd.to_datetime(df_forecast['date_time'])
+df_actual['date_time']=pd.to_datetime(df_actual['date_time'])
+
+# calculate root mean squared error
+realVals = dataset['Production_PV'].iloc[-len(testX):].tolist()
+predictedVals = df_forecast['Production_PV'].tolist()
+rmse = sqrt(mean_squared_error(realVals, predictedVals))
+print('Test Score: %.2f RMSE' % (rmse))
+# calculate regression score function
+R2_score=r2_score(realVals, predictedVals)
+print('Test Score: %.2f R2_score' % (R2_score))
+# calculate mean absolute error
+mae = mean_absolute_error(realVals, predictedVals)
+print('Test Score: %.2f MAE' % (mae))
+
+
+fig1 = plt.figure(figsize=(15,9))
+ax=fig1.add_subplot(1,1,1)
+plt.plot(df_forecast['date_time'],df_forecast['Production_PV'],color='red') #forecast
+plt.plot(df_actual['date_time'],df_actual['Production_PV'],color='black') #forecast
+ax.legend(['forecast','actual'],loc ='upper left')
+plt.title('data set forecasting',fontsize=32)
+plt.xlabel('date_time')
+plt.ylabel('PV production')
+k="Data split : \n n_train={}% \n n_test={}% \n \n Model summary : \n n_epochs by earlytopping= {} \n n_batch= {} \n input_length= {} \n output_length= {} \n layers= {}  \n lstm_activation= {} \n learning_rate={}  \n train accuracy={} \n test accuracy ={} \n \n forecasting sequence : \n from {} \n to {} \n RMSE={}\n MAE ={}\n R2_score={}".format(train*100,100-train*100,es.stopped_epoch,batch_size,n_input,n_output,model_conception, lstm_activation,learning_rate,train_acc[1],test_acc[1],forecast_period_dates[0],forecast_period_dates[-1],rmse,mae,R2_score) 
+plt.figtext(0.95, 0.1,k, fontsize=18, bbox={"facecolor":"orange", "alpha":0.5, "pad":5})
+
+
+
+
